@@ -2,11 +2,11 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value,json};
 use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
+use threadpool::ThreadPool;
 
 #[derive(Serialize,Deserialize,Debug)]
 struct Person{
@@ -24,14 +24,16 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     println!("Server running on 127.0.0.1:7878");
 
+    let pool = ThreadPool::new(4);
+
     // Loop to handle incoming connections
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(stream) => {
                 let messages = Arc::clone(&messages);
                 let connected = Arc::clone(&connected);
-                thread::spawn(move || {
-                    handle_client(&mut stream, messages, connected);
+                pool.execute(move || {
+                    handle_client(stream, messages, connected);
                 });
             }
             Err(e) => {
@@ -43,7 +45,7 @@ fn main() {
 
 // Function to handle client messages
 fn handle_client(
-    stream: &mut TcpStream,
+    mut stream: TcpStream,
     messages: Arc<Mutex<Vec<String>>>,
     connected: Arc<Mutex<i32>>,
 ) {
