@@ -24,6 +24,9 @@ fn main() {
                             if response.contains("Login successful") {
                                 connected = 1;
                             }
+                            if response.contains("Register successful") {
+                                connected = 1;
+                            }
                         }
                         Err(e) => {
                             eprintln!("Failed to read response: {}", e);
