@@ -7,11 +7,13 @@ use serde_json::{Value,json};
 use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
 use threadpool::ThreadPool;
+use chrono::{Utc, Duration, DateTime};
 
 #[derive(Serialize,Deserialize,Debug)]
 struct Person{
     username : String,
     token : String,
+    created_at : String,
 }
 
 fn main() {
@@ -25,6 +27,10 @@ fn main() {
     println!("Server running on 127.0.0.1:7878");
 
     let pool = ThreadPool::new(4);
+
+    let _ = std::thread::spawn(|| {
+        remove_expired_accounts();
+    });
 
     // Loop to handle incoming connections
     for stream in listener.incoming() {
@@ -83,11 +89,13 @@ fn handle_client(
                             .take(10)
                             .map(char::from)
                             .collect();
+                        let created_at = Utc::now().to_rfc3339();
                         let response = format!("Register successful. Your token is: {}",token);
                         stream.write_all(response.as_bytes()).unwrap();
                         let new_person = json!({
                             "username": username.to_string(),
                             "token": token.clone(),
+                            "created_at": created_at,
                         });
                         if let Some(users) = json.as_array_mut() {
                             users.push(new_person);
@@ -102,31 +110,49 @@ fn handle_client(
                     }
                 } else
                 if message.starts_with("Login :") && 0 == *connected.lock().unwrap() {
-                    let username = message.trim_start_matches("Login :").trim();
-                    println!("Username: {}", username);
+                    let parts: Vec<&str> = message.trim_start_matches("Login :").trim().split_whitespace().collect();
+                    if parts.len() != 2 {
+                        let response = "Login failed: Invalid format";
+                        stream.write_all(response.as_bytes()).unwrap();
+                        continue;
+                    }
+                    let username = parts[0];
+                    let token = parts[1];
+                    println!("Username: {}, Token: {}", username, token);
                     let mut login_success = false;
-                    if let Some(users) = json.as_array(){
-                        for user in users{
+                    let mut token_valid = false;
+                    if let Some(users) = json.as_array() {
+                        for user in users {
                             if let Some(user_name) = user.get("username") {
-                                println!("User: {}", user_name);
                                 if user_name == username {
                                     login_success = true;
+                                    if let Some(user_token) = user.get("token") {
+                                        if user_token == token {
+                                            token_valid = true;
+                                        }
+                                    }
                                     break;
                                 }
                             }
                         }
                     }
-                    if login_success {
-                        println!("A mers login!");
-                        {
-                            let mut connected = connected.lock().unwrap();
-                            *connected = 1;
+                    if login_success && token_valid {
+                        println!("Login successful!");
+                        match connected.lock() {
+                            Ok(mut connected_v) => {
+                                *connected_v = 1;
+                                let response = "Login successful";
+                                stream.write_all(response.as_bytes()).unwrap();
+                                println!("Sent login message: {}", response);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to lock connected: {}", e);
+                            }
                         }
-                        let response = "Login successful";
+                    } else if login_success {
+                        let response = "Login failed: Incorrect token";
                         stream.write_all(response.as_bytes()).unwrap();
-                        println!("Am scris mesajul de login : {}", response);
-                    }
-                    else {
+                    } else {
                         let response = "Login failed: Username not found";
                         stream.write_all(response.as_bytes()).unwrap();
                     }
@@ -148,12 +174,13 @@ fn handle_client(
                 } 
                 else if message.starts_with("COMMAND_OUTPUT:") && 1 == *connected.lock().unwrap() {
                     // Handle a custom message from the client
+                    let command = message.trim_start_matches("COMMAND_OUTPUT:").trim();
                     println!("Merge Comanda!");
                     {
                         let mut messages = messages.lock().unwrap();
-                        messages.push(message.trim().to_string());
+                        messages.push(command.to_string());
                     } // Save the message
-                    println!("Saved message: {}", message.trim());
+                    println!("Saved message: {}", command);
                 }
                 else{
                     let response = "Comanda invalida";
@@ -165,5 +192,35 @@ fn handle_client(
             }
             Err(e) => eprintln!("Failed to read message: {}", e),
         }
+    }
+}
+
+fn remove_expired_accounts() {
+    loop {
+        let mut file = File::open("src/Info.json").expect("Unable to open Info.json");
+        let mut data = String::new();
+        file.read_to_string(&mut data).expect("Unable to read Info.json");
+        let mut json: Value = serde_json::from_str(&data).expect("Unable to parse Info.json");
+
+        let now = Utc::now();
+        if let Some(users) = json.as_array_mut() {
+            users.retain(|user| {
+                if let Some(created_at) = user.get("created_at") {
+                    if let Some(created_at_str) = created_at.as_str() {
+                        if let Ok(created_at_date) = DateTime::parse_from_rfc3339(created_at_str) {
+                            return now.signed_duration_since(created_at_date.with_timezone(&Utc)) < Duration::days(60);
+                        }
+                    }
+                }
+                false
+            });
+        }
+
+        let new_data = serde_json::to_string(&json).expect("Unable to serialize JSON");
+        let mut file = File::create("src/Info.json").expect("Unable to open Info.json");
+        file.write_all(new_data.as_bytes()).expect("Unable to write Info.json");
+
+        // Sleep for a day before checking again
+        std::thread::sleep(std::time::Duration::from_secs(10));
     }
 }
