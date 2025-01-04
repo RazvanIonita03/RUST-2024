@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
@@ -19,9 +19,6 @@ struct Person {
 }
 
 fn main() {
-    println!("{}", std::env::current_dir().unwrap().display());
-    // Bind to the address and port
-
     let connected = Arc::new(Mutex::new(0));
 
     let currentuser = Arc::new(Mutex::new(String::new()));
@@ -35,14 +32,13 @@ fn main() {
         remove_expired_accounts();
     });
 
-    // Loop to handle incoming connections
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let connected = Arc::clone(&connected);
                 let currentuser = Arc::clone(&currentuser);
                 pool.execute(move || {
-                    handle_client(stream, currentuser,connected);
+                    handle_client(stream, currentuser, connected);
                 });
             }
             Err(e) => {
@@ -52,15 +48,18 @@ fn main() {
     }
 }
 
-// Function to handle client messages
-fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connected: Arc<Mutex<i32>>) {
+fn handle_client(
+    mut stream: TcpStream,
+    currentuser: Arc<Mutex<String>>,
+    connected: Arc<Mutex<i32>>,
+) {
     let mut file = File::open("src/Info.json").expect("Unable to open Info.json");
     let mut data = String::new();
     file.read_to_string(&mut data)
         .expect("Unable to read Info.json");
     let mut json: Value = serde_json::from_str(&data).expect("Unable to parse Info.json");
     'outer: loop {
-        let mut buffer = [0; 1024]; // Buffer to hold the incoming message
+        let mut buffer = [0; 1024];
         match stream.read(&mut buffer) {
             Ok(bytes_read) if bytes_read > 0 => {
                 // Convert the message to a string and print it
@@ -122,7 +121,6 @@ fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connect
                     }
                     let username = parts[0];
                     let token = parts[1];
-                    println!("Username: {}, Token: {}", username, token);
                     let mut login_success = false;
                     let mut token_valid = false;
                     if let Some(users) = json.as_array() {
@@ -142,7 +140,6 @@ fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connect
                                                 }
                                             }
                                             token_valid = true;
-                                            println!("Current user in iteratie: {}", currentuser.lock().unwrap());
                                         }
                                     }
                                     break;
@@ -171,60 +168,113 @@ fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connect
                         stream.write_all(response.as_bytes()).unwrap();
                     }
                 } else if message.starts_with("GET") && 1 == *connected.lock().unwrap() {
-                    // Handle an HTTP request
-                    if message.starts_with("GET /favicon.ico")  {
+                    if message.starts_with("GET /favicon.ico") {
                         break 'outer;
-                    }
-                    println!("Intram pe site cu mesajul : {}", message);
-                    let request_line = message.lines().next().unwrap_or("");
-                    let token = request_line.split_whitespace().nth(1).unwrap_or("").trim_start_matches('/');
-                    println!("Current user: {}", currentuser.lock().unwrap());
-                    println!("Token : {}", token);
-                    let mut response_body = String::new();
-                    if let Some(users) = json.as_array() {
-                        println!("Users array found");
-                        for user in users {
-                            if let Some(user_name) = user.get("username") {
-                                let user_name = user_name.as_str().unwrap_or("").trim();
-                                println!("Checking user: {}", user_name);
-                                let currentuser_v = currentuser.lock().unwrap();
-                                let currentuser_v = currentuser_v.trim().trim_matches('"');
-                                println!("Current user: {}", currentuser_v);
-                                if user_name == currentuser_v {
-                                    println!("Current user matched: {}", currentuser_v);
-                                    if let Some(metadata) = user.get("metadata") {
-                                        println!("Metadata found for user: {}", currentuser_v);
-                                        let metadata_map: HashMap<String, (String, String)> = serde_json::from_value(metadata.clone()).unwrap_or_default();
-                                        if let Some((output, timestamp)) = metadata_map.get(token) {
-                                            response_body = format!("Output: {}\nTimestamp: {}", output, timestamp);
-                                            println!("Output: {}", output);
+                    } 
+                    else {
+                        println!("Intram pe site cu mesajul : {}", message);
+                        let request_line = message.lines().next().unwrap_or("");
+                        let token = request_line
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim_start_matches('/');
+                        println!("Current user: {}", currentuser.lock().unwrap());
+                        println!("Token : {}", token);
+                        if token.is_empty() {
+                            let mut response_body = String::new();
+                            let currentuser_v = currentuser.lock().unwrap();
+                            let currentuser_v = currentuser_v.trim().trim_matches('"');
+                            response_body.push_str(&format!("{} : ", currentuser_v));
+
+                            if let Some(users) = json.as_array() {
+                                for user in users {
+                                    if let Some(user_name) = user.get("username") {
+                                        let user_name = user_name.as_str().unwrap_or("").trim();
+                                        if user_name == currentuser_v {
+                                            if let Some(metadata) = user.get("metadata") {
+                                                let metadata_map: HashMap<
+                                                    String,
+                                                    (String, String),
+                                                > = serde_json::from_value(metadata.clone())
+                                                    .unwrap_or_default();
+                                                for (token, _) in metadata_map {
+                                                    response_body.push_str(&format!("tpaste.fii/{} ",token));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{}",
+                                response_body
+                            );
+
+                            stream.write_all(response.as_bytes()).unwrap();
+                            stream.flush().unwrap();
+                            break 'outer;
+                        }
+                        let mut response_body = String::new();
+                        if let Some(users) = json.as_array() {
+                            println!("Users array found");
+                            for user in users {
+                                if let Some(user_name) = user.get("username") {
+                                    let user_name = user_name.as_str().unwrap_or("").trim();
+                                    let currentuser_v = currentuser.lock().unwrap();
+                                    let currentuser_v = currentuser_v.trim().trim_matches('"');
+                                    if user_name == currentuser_v {
+                                        if let Some(metadata) = user.get("metadata") {
+                                            let metadata_map: HashMap<String, (String, String)> =
+                                                serde_json::from_value(metadata.clone())
+                                                    .unwrap_or_default();
+                                            if let Some((output, timestamp)) =
+                                                metadata_map.get(token)
+                                            {
+                                                let datetime: DateTime<Utc> =
+                                                    timestamp.parse().unwrap();
+                                                let local_datetime = datetime.with_timezone(&Local);
+                                                let formatted_timestamp = local_datetime
+                                                    .format("%Y-%m-%d %H:%M:%S")
+                                                    .to_string();
+                                                response_body = format!(
+                                                    "Output: {}\nTimestamp: {}",
+                                                    output, formatted_timestamp
+                                                );
+                                                println!("Output: {}", output);
+                                            } else {
+                                                println!(
+                                                    "Token not found in metadata for user: {}",
+                                                    currentuser_v
+                                                );
+                                            }
                                         } else {
-                                            println!("Token not found in metadata for user: {}", currentuser_v);
+                                            println!(
+                                                "Metadata not found for user: {}",
+                                                currentuser_v
+                                            );
                                         }
                                     } else {
-                                        println!("Metadata not found for user: {}", currentuser_v);
+                                        println!("User does not match current user: {}", user_name);
                                     }
                                 } else {
-                                    println!("User does not match current user: {}", user_name);
+                                    println!("Username not found in user object");
                                 }
-                            } else {
-                                println!("Username not found in user object");
                             }
+                        } else {
+                            println!("Users array not found in JSON");
                         }
-                    } else {
-                        println!("Users array not found in JSON");
-                    }
-                    println!("Response body: {}", response_body);
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{}",
-                        response_body
-                    );
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{}",
+                            response_body
+                        );
 
-                    stream.write_all(response.as_bytes()).unwrap();
-                    break 'outer;
+                        stream.write_all(response.as_bytes()).unwrap();
+                        break 'outer;
+                    }
                 } else if message.starts_with("COMMAND_OUTPUT:") && 1 == *connected.lock().unwrap()
                 {
-                    // Handle a custom message from the client
                     let command = message.trim_start_matches("COMMAND_OUTPUT:").trim();
                     if let Some(users) = json.as_array_mut() {
                         for user in users.iter_mut() {
@@ -244,11 +294,14 @@ fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connect
                                             .collect();
                                         let time_called = Utc::now().to_rfc3339();
                                         metadata_map.insert(
-                                            random_token,
+                                            random_token.clone(),
                                             (command.to_string(), time_called.to_string()),
                                         );
-                                        println!("Metadata map: {:?}", metadata_map);
                                         *metadata = serde_json::to_value(metadata_map).unwrap();
+                                        let link = format!("http://tpaste.fii/{}", random_token);
+                                        let response = format!("Output saved. Access it at: {}", link);
+                                        println!("Response: {}", response);
+                                        stream.write_all(response.as_bytes()).unwrap();
                                     }
                                 }
                             }
@@ -258,7 +311,6 @@ fn handle_client(mut stream: TcpStream, currentuser: Arc<Mutex<String>>, connect
                     let mut file = File::create("src/Info.json").expect("Unable to open Info.json");
                     file.write_all(new_data.as_bytes())
                         .expect("Unable to write Info.json");
-                    println!("Saved message: {}", command);
                 } else {
                     let response = "Comanda invalida";
                     stream.write_all(response.as_bytes()).unwrap();
@@ -300,7 +352,7 @@ fn remove_expired_accounts() {
         file.write_all(new_data.as_bytes())
             .expect("Unable to write Info.json");
 
-        // Sleep for a day before checking again
         std::thread::sleep(std::time::Duration::from_secs(10));
+        //Verificare la fiecare 10 secunde
     }
 }

