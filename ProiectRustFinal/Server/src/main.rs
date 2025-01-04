@@ -62,7 +62,6 @@ fn handle_client(
         let mut buffer = [0; 1024];
         match stream.read(&mut buffer) {
             Ok(bytes_read) if bytes_read > 0 => {
-                // Convert the message to a string and print it
                 let message = String::from_utf8_lossy(&buffer[..bytes_read]);
                 if *connected.lock().unwrap() == 0 && message.starts_with("Register :") {
                     let username = message.trim_start_matches("Register :").trim();
@@ -80,7 +79,6 @@ fn handle_client(
                         }
                     }
                     if register_success {
-                        println!("A mers register!");
                         let token: String = thread_rng()
                             .sample_iter(&Alphanumeric)
                             .take(10)
@@ -108,6 +106,7 @@ fn handle_client(
                         let response = "Register failed: Username already exists";
                         stream.write_all(response.as_bytes()).unwrap();
                     }
+                    
                 } else if message.starts_with("Login :") && 0 == *connected.lock().unwrap() {
                     let parts: Vec<&str> = message
                         .trim_start_matches("Login :")
@@ -172,15 +171,12 @@ fn handle_client(
                         break 'outer;
                     } 
                     else {
-                        println!("Intram pe site cu mesajul : {}", message);
                         let request_line = message.lines().next().unwrap_or("");
                         let token = request_line
                             .split_whitespace()
                             .nth(1)
                             .unwrap_or("")
                             .trim_start_matches('/');
-                        println!("Current user: {}", currentuser.lock().unwrap());
-                        println!("Token : {}", token);
                         if token.is_empty() {
                             let mut response_body = String::new();
                             let currentuser_v = currentuser.lock().unwrap();
@@ -218,7 +214,6 @@ fn handle_client(
                         }
                         let mut response_body = String::new();
                         if let Some(users) = json.as_array() {
-                            println!("Users array found");
                             for user in users {
                                 if let Some(user_name) = user.get("username") {
                                     let user_name = user_name.as_str().unwrap_or("").trim();
@@ -239,8 +234,8 @@ fn handle_client(
                                                     .format("%Y-%m-%d %H:%M:%S")
                                                     .to_string();
                                                 response_body = format!(
-                                                    "Output: {}\nTimestamp: {}",
-                                                    output, formatted_timestamp
+                                                    "Timestamp: {}\nOutput: {}",
+                                                    formatted_timestamp, output
                                                 );
                                                 println!("Output: {}", output);
                                             } else {
@@ -312,7 +307,7 @@ fn handle_client(
                     file.write_all(new_data.as_bytes())
                         .expect("Unable to write Info.json");
                 } else {
-                    let response = "Comanda invalida";
+                    let response = "Invalid command";
                     stream.write_all(response.as_bytes()).unwrap();
                 }
             }

