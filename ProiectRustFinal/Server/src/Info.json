@@ -1,1 +1,35 @@
-[{"created_at":"2025-01-02T20:02:51.979157800+00:00","token":"JMdldEDzXr","username":"RazvyRegele"},{"created_at":"2025-01-02T20:03:47.771729600+00:00","token":"8Y69RL2azI","username":"Razvy"}]
+[
+    {
+        "created_at": "2025-01-02T20:02:51.979157800+00:00",
+        "token": "JMdldEDzXr",
+        "username": "RazvyRegele"
+    },
+    {
+        "created_at": "2025-01-02T20:03:47.771729600+00:00",
+        "token": "8Y69RL2azI",
+        "username": "Razvy"
+    },
+    {
+        "created_at": "2025-01-04T14:13:48.260987500+00:00",
+        "metadata": {
+            "WXJ1snXhC6": [
+                "desktop-pdun1tn\\razvan",
+                "2025-01-04T14:19:03.716665200+00:00"
+            ],
+            "dFcIr3HcY8": [
+                "desktop-pdun1tn\\razvan",
+                "2025-01-04T14:19:00.968478200+00:00"
+            ],
+            "gkEIjRN6NH": [
+                "WAZAAAAAAAAAAAAAAAAA",
+                "2025-01-04T15:24:08.356607800+00:00"
+            ],
+            "sVDcgrR8Qh": [
+                "desktop-pdun1tn\\razvan",
+                "2025-01-04T14:20:44.829022100+00:00"
+            ]
+        },
+        "token": "Sfe5yEL7Om",
+        "username": "Alex"
+    }
+]

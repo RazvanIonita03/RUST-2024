@@ -5,7 +5,7 @@ use std::process::Command;
 fn main() {
     let mut connected = 0;
 
-    match TcpStream::connect("127.0.0.1:7878") {
+    match TcpStream::connect("127.0.0.1:80") {
         Ok(mut stream) => {
             println!("Connected!");
 
