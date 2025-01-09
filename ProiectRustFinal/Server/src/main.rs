@@ -303,20 +303,27 @@ fn handle_client(
                                                 match serde_json::from_value(metadata.clone()) {
                                                     Ok(map) => map,
                                                     Err(e) => {
-                                                        eprintln!("Failed to deserialize metadata: {}", e);
+                                                        eprintln!(
+                                                            "Failed to deserialize metadata: {}",
+                                                            e
+                                                        );
                                                         continue 'outer;
                                                     }
                                                 };
                                             if let Some((output, timestamp)) =
                                                 metadata_map.get(token)
                                             {
-                                                let datetime: DateTime<Utc> = match timestamp.parse() {
-                                                    Ok(dt) => dt,
-                                                    Err(e) => {
-                                                        eprintln!("Failed to parse timestamp: {}", e);
-                                                        continue 'outer;
-                                                    }
-                                                };
+                                                let datetime: DateTime<Utc> =
+                                                    match timestamp.parse() {
+                                                        Ok(dt) => dt,
+                                                        Err(e) => {
+                                                            eprintln!(
+                                                                "Failed to parse timestamp: {}",
+                                                                e
+                                                            );
+                                                            continue 'outer;
+                                                        }
+                                                    };
                                                 let local_datetime = datetime.with_timezone(&Local);
                                                 let formatted_timestamp = local_datetime
                                                     .format("%Y-%m-%d %H:%M:%S")
@@ -376,7 +383,10 @@ fn handle_client(
                                             match serde_json::from_value(metadata.take()) {
                                                 Ok(map) => map,
                                                 Err(e) => {
-                                                    eprintln!("Failed to deserialize metadata: {}", e);
+                                                    eprintln!(
+                                                        "Failed to deserialize metadata: {}",
+                                                        e
+                                                    );
                                                     continue 'outer;
                                                 }
                                             };
