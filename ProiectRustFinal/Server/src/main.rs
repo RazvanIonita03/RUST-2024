@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Local, Utc};
+use core::fmt;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
@@ -18,18 +19,47 @@ struct Person {
     metadata: HashMap<String, (String, String)>,
 }
 
-fn main() {
+#[derive(Debug)]
+enum ErrorType {
+    IoError(std::io::Error),
+    JsonError(serde_json::Error),
+}
+
+impl fmt::Display for ErrorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorType::IoError(e) => write!(f, "IO Error: {}", e),
+            ErrorType::JsonError(e) => write!(f, "JSON Error: {}", e),
+        }
+    }
+}
+
+impl From<std::io::Error> for ErrorType {
+    fn from(e: std::io::Error) -> Self {
+        ErrorType::IoError(e)
+    }
+}
+
+impl From<serde_json::Error> for ErrorType {
+    fn from(e: serde_json::Error) -> Self {
+        ErrorType::JsonError(e)
+    }
+}
+
+fn main() -> Result<(), ErrorType> {
     let connected = Arc::new(Mutex::new(0));
 
     let currentuser = Arc::new(Mutex::new(String::new()));
 
-    let listener = TcpListener::bind("127.0.0.1:80").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:80")?;
     println!("Server running on 127.0.0.1:80");
 
     let pool = ThreadPool::new(4);
 
     let _ = std::thread::spawn(|| {
-        remove_expired_accounts();
+        if let Err(e) = remove_expired_accounts() {
+            eprintln!("Failed to remove expired accounts: {}", e);
+        }
     });
 
     for stream in listener.incoming() {
@@ -38,7 +68,9 @@ fn main() {
                 let connected = Arc::clone(&connected);
                 let currentuser = Arc::clone(&currentuser);
                 pool.execute(move || {
-                    handle_client(stream, currentuser, connected);
+                    if let Err(e) = handle_client(stream, currentuser, connected) {
+                        eprintln!("Failed to handle client: {}", e);
+                    }
                 });
             }
             Err(e) => {
@@ -46,18 +78,18 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
 
 fn handle_client(
     mut stream: TcpStream,
     currentuser: Arc<Mutex<String>>,
     connected: Arc<Mutex<i32>>,
-) {
-    let mut file = File::open("src/Info.json").expect("Unable to open Info.json");
+) -> Result<(), ErrorType> {
+    let mut file = File::open("src/Info.json")?;
     let mut data = String::new();
-    file.read_to_string(&mut data)
-        .expect("Unable to read Info.json");
-    let mut json: Value = serde_json::from_str(&data).expect("Unable to parse Info.json");
+    file.read_to_string(&mut data)?;
+    let mut json: Value = serde_json::from_str(&data)?;
     'outer: loop {
         let mut buffer = [0; 1024];
         match stream.read(&mut buffer) {
@@ -75,8 +107,12 @@ fn handle_client(
                                     register_success = false;
                                     break;
                                 }
+                            } else {
+                                eprintln!("Username not found in JSON");
                             }
                         }
+                    } else {
+                        eprintln!("Users array not found in JSON");
                     }
                     if register_success {
                         let token: String = thread_rng()
@@ -86,7 +122,10 @@ fn handle_client(
                             .collect();
                         let created_at = Utc::now().to_rfc3339();
                         let response = format!("Register successful. Your token is: {}", token);
-                        stream.write_all(response.as_bytes()).unwrap();
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                            continue 'outer;
+                        }
                         let new_person = json!({
                             "username": username.to_string(),
                             "token": token.clone(),
@@ -95,18 +134,33 @@ fn handle_client(
                         });
                         if let Some(users) = json.as_array_mut() {
                             users.push(new_person);
+                        } else {
+                            eprintln!("Users array not found in JSON");
                         }
-                        let new_data =
-                            serde_json::to_string(&json).expect("Unable to serialize JSON");
-                        let mut file =
-                            File::create("src/Info.json").expect("Unable to open Info.json");
-                        file.write_all(new_data.as_bytes())
-                            .expect("Unable to write Info.json");
+                        let new_data = match serde_json::to_string(&json) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                eprintln!("Failed to serialize JSON: {}", e);
+                                continue 'outer;
+                            }
+                        };
+                        let mut file = match File::create("src/Info.json") {
+                            Ok(file) => file,
+                            Err(e) => {
+                                eprintln!("Failed to create Info.json: {}", e);
+                                continue 'outer;
+                            }
+                        };
+                        if let Err(e) = file.write_all(new_data.as_bytes()) {
+                            eprintln!("Failed to write to Info.json: {}", e);
+                            continue 'outer;
+                        }
                     } else {
                         let response = "Register failed: Username already exists";
-                        stream.write_all(response.as_bytes()).unwrap();
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
                     }
-                    
                 } else if message.starts_with("Login :") && 0 == *connected.lock().unwrap() {
                     let parts: Vec<&str> = message
                         .trim_start_matches("Login :")
@@ -115,7 +169,9 @@ fn handle_client(
                         .collect();
                     if parts.len() != 2 {
                         let response = "Login failed: Invalid format";
-                        stream.write_all(response.as_bytes()).unwrap();
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
                         continue;
                     }
                     let username = parts[0];
@@ -145,6 +201,8 @@ fn handle_client(
                                 }
                             }
                         }
+                    } else {
+                        eprintln!("Users array not found in JSON");
                     }
                     if login_success && token_valid {
                         println!("Login successful!");
@@ -152,7 +210,7 @@ fn handle_client(
                             Ok(mut connected_v) => {
                                 *connected_v = 1;
                                 let response = "Login successful";
-                                stream.write_all(response.as_bytes()).unwrap();
+                                stream.write_all(response.as_bytes())?;
                                 println!("Sent login message: {}", response);
                             }
                             Err(e) => {
@@ -161,16 +219,19 @@ fn handle_client(
                         }
                     } else if login_success {
                         let response = "Login failed: Incorrect token";
-                        stream.write_all(response.as_bytes()).unwrap();
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
                     } else {
                         let response = "Login failed: Username not found";
-                        stream.write_all(response.as_bytes()).unwrap();
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
                     }
                 } else if message.starts_with("GET") && 1 == *connected.lock().unwrap() {
                     if message.starts_with("GET /favicon.ico") {
-                        break 'outer;
-                    } 
-                    else {
+                        return Ok(());
+                    } else {
                         let request_line = message.lines().next().unwrap_or("");
                         let token = request_line
                             .split_whitespace()
@@ -192,15 +253,28 @@ fn handle_client(
                                                 let metadata_map: HashMap<
                                                     String,
                                                     (String, String),
-                                                > = serde_json::from_value(metadata.clone())
-                                                    .unwrap_or_default();
+                                                > = match serde_json::from_value(metadata.clone()) {
+                                                    Ok(map) => map,
+                                                    Err(e) => {
+                                                        eprintln!(
+                                                            "Failed to deserialize metadata: {}",
+                                                            e
+                                                        );
+                                                        continue 'outer;
+                                                    }
+                                                };
                                                 for (token, _) in metadata_map {
-                                                    response_body.push_str(&format!("tpaste.fii/{} ",token));
+                                                    response_body.push_str(&format!(
+                                                        "tpaste.fii/{} ",
+                                                        token
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            } else {
+                                eprintln!("Users array not found in JSON");
                             }
 
                             let response = format!(
@@ -208,9 +282,13 @@ fn handle_client(
                                 response_body
                             );
 
-                            stream.write_all(response.as_bytes()).unwrap();
-                            stream.flush().unwrap();
-                            break 'outer;
+                            if let Err(e) = stream.write_all(response.as_bytes()) {
+                                eprintln!("Failed to write to stream: {}", e);
+                            }
+                            if let Err(e) = stream.flush() {
+                                eprintln!("Failed to flush stream: {}", e);
+                            }
+                            return Ok(());
                         }
                         let mut response_body = String::new();
                         if let Some(users) = json.as_array() {
@@ -222,13 +300,23 @@ fn handle_client(
                                     if user_name == currentuser_v {
                                         if let Some(metadata) = user.get("metadata") {
                                             let metadata_map: HashMap<String, (String, String)> =
-                                                serde_json::from_value(metadata.clone())
-                                                    .unwrap_or_default();
+                                                match serde_json::from_value(metadata.clone()) {
+                                                    Ok(map) => map,
+                                                    Err(e) => {
+                                                        eprintln!("Failed to deserialize metadata: {}", e);
+                                                        continue 'outer;
+                                                    }
+                                                };
                                             if let Some((output, timestamp)) =
                                                 metadata_map.get(token)
                                             {
-                                                let datetime: DateTime<Utc> =
-                                                    timestamp.parse().unwrap();
+                                                let datetime: DateTime<Utc> = match timestamp.parse() {
+                                                    Ok(dt) => dt,
+                                                    Err(e) => {
+                                                        eprintln!("Failed to parse timestamp: {}", e);
+                                                        continue 'outer;
+                                                    }
+                                                };
                                                 let local_datetime = datetime.with_timezone(&Local);
                                                 let formatted_timestamp = local_datetime
                                                     .format("%Y-%m-%d %H:%M:%S")
@@ -239,34 +327,39 @@ fn handle_client(
                                                 );
                                                 println!("Output: {}", output);
                                             } else {
-                                                println!(
+                                                eprintln!(
                                                     "Token not found in metadata for user: {}",
                                                     currentuser_v
                                                 );
                                             }
                                         } else {
-                                            println!(
+                                            eprintln!(
                                                 "Metadata not found for user: {}",
                                                 currentuser_v
                                             );
                                         }
                                     } else {
-                                        println!("User does not match current user: {}", user_name);
+                                        eprintln!(
+                                            "User does not match current user: {}",
+                                            user_name
+                                        );
                                     }
                                 } else {
-                                    println!("Username not found in user object");
+                                    eprintln!("Username not found in user object");
                                 }
                             }
                         } else {
-                            println!("Users array not found in JSON");
+                            eprintln!("Users array not found in JSON");
                         }
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{}",
                             response_body
                         );
 
-                        stream.write_all(response.as_bytes()).unwrap();
-                        break 'outer;
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
+                        return Ok(());
                     }
                 } else if message.starts_with("COMMAND_OUTPUT:") && 1 == *connected.lock().unwrap()
                 {
@@ -280,35 +373,65 @@ fn handle_client(
                                 if user_name == currentuser_v {
                                     if let Some(metadata) = user.get_mut("metadata") {
                                         let mut metadata_map: HashMap<String, (String, String)> =
-                                            serde_json::from_value(metadata.take())
-                                                .unwrap_or_default();
+                                            match serde_json::from_value(metadata.take()) {
+                                                Ok(map) => map,
+                                                Err(e) => {
+                                                    eprintln!("Failed to deserialize metadata: {}", e);
+                                                    continue 'outer;
+                                                }
+                                            };
                                         let random_token: String = thread_rng()
                                             .sample_iter(&Alphanumeric)
                                             .take(10)
                                             .map(char::from)
                                             .collect();
                                         let time_called = Utc::now().to_rfc3339();
-                                        metadata_map.insert(
+                                        match metadata_map.insert(
                                             random_token.clone(),
                                             (command.to_string(), time_called.to_string()),
-                                        );
-                                        *metadata = serde_json::to_value(metadata_map).unwrap();
-                                        let link = format!("http://tpaste.fii/{}", random_token);
-                                        let response = format!("Output saved. Access it at: {}", link);
-                                        println!("Response: {}", response);
-                                        stream.write_all(response.as_bytes()).unwrap();
+                                        ) {
+                                            Some(_) => {
+                                                eprintln!("Token already exists in metadata");
+                                            }
+                                            None => {
+                                                *metadata = serde_json::to_value(metadata_map)?;
+                                                let link =
+                                                    format!("http://tpaste.fii/{}", random_token);
+                                                let response =
+                                                    format!("Output saved. Access it at: {}", link);
+                                                println!("Response: {}", response);
+                                                stream.write_all(response.as_bytes())?;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+                    } else {
+                        eprintln!("Users array not found in JSON");
                     }
-                    let new_data = serde_json::to_string(&json).expect("Unable to serialize JSON");
-                    let mut file = File::create("src/Info.json").expect("Unable to open Info.json");
-                    file.write_all(new_data.as_bytes())
-                        .expect("Unable to write Info.json");
+                    let new_data = match serde_json::to_string(&json) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            eprintln!("Failed to serialize JSON: {}", e);
+                            continue 'outer;
+                        }
+                    };
+                    let mut file = match File::create("src/Info.json") {
+                        Ok(file) => file,
+                        Err(e) => {
+                            eprintln!("Failed to create Info.json: {}", e);
+                            continue 'outer;
+                        }
+                    };
+                    if let Err(e) = file.write_all(new_data.as_bytes()) {
+                        eprintln!("Failed to write to Info.json: {}", e);
+                    }
                 } else {
                     let response = "Invalid command";
-                    stream.write_all(response.as_bytes()).unwrap();
+                    if let Err(e) = stream.write_all(response.as_bytes()) {
+                        eprintln!("Failed to write to stream: {}", e);
+                    }
                 }
             }
             Ok(_) => {
@@ -319,12 +442,11 @@ fn handle_client(
     }
 }
 
-fn remove_expired_accounts() {
+fn remove_expired_accounts() -> Result<(), ErrorType> {
     loop {
-        let mut file = File::open("src/Info.json").expect("Unable to open Info.json");
+        let mut file = File::open("src/Info.json")?;
         let mut data = String::new();
-        file.read_to_string(&mut data)
-            .expect("Unable to read Info.json");
+        file.read_to_string(&mut data)?;
         let mut json: Value = serde_json::from_str(&data).expect("Unable to parse Info.json");
 
         let now = Utc::now();
@@ -342,10 +464,9 @@ fn remove_expired_accounts() {
             });
         }
 
-        let new_data = serde_json::to_string(&json).expect("Unable to serialize JSON");
-        let mut file = File::create("src/Info.json").expect("Unable to open Info.json");
-        file.write_all(new_data.as_bytes())
-            .expect("Unable to write Info.json");
+        let new_data = serde_json::to_string(&json)?;
+        let mut file = File::create("src/Info.json")?;
+        file.write_all(new_data.as_bytes())?;
 
         std::thread::sleep(std::time::Duration::from_secs(10));
         //Verificare la fiecare 10 secunde
