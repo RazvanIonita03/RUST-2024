@@ -15,7 +15,7 @@ fn main() {
                 match stdin().read_line(&mut buffer) {
                     Ok(_) => {
                         if connected == 0 {
-                            if let Err(e) = stream.write(&buffer.as_bytes()) {
+                            if let Err(e) = stream.write(buffer.as_bytes()) {
                                 eprintln!("Failed to write the buffer : {}", e);
                             };
                             match stream.read(&mut response) {

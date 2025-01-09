@@ -67,7 +67,7 @@ fn main() -> Result<(), ErrorType> {
             Ok(stream) => {
                 let connected = Arc::clone(&connected);
                 let currentuser = Arc::clone(&currentuser);
-                pool.execute(move || {
+                pool.execute(move|| {
                     if let Err(e) = handle_client(stream, currentuser, connected) {
                         eprintln!("Failed to handle client: {}", e);
                     }
@@ -164,7 +164,6 @@ fn handle_client(
                 } else if message.starts_with("Login :") && 0 == *connected.lock().unwrap() {
                     let parts: Vec<&str> = message
                         .trim_start_matches("Login :")
-                        .trim()
                         .split_whitespace()
                         .collect();
                     if parts.len() != 2 {
@@ -174,8 +173,8 @@ fn handle_client(
                         }
                         continue;
                     }
-                    let username = parts[0];
-                    let token = parts[1];
+                    let username = parts[0].trim();
+                    let token = parts[1].trim();
                     let mut login_success = false;
                     let mut token_valid = false;
                     if let Some(users) = json.as_array() {
@@ -233,16 +232,18 @@ fn handle_client(
                         return Ok(());
                     } else {
                         let request_line = message.lines().next().unwrap_or("");
+                        println!("Request line: {}", request_line);
                         let token = request_line
                             .split_whitespace()
                             .nth(1)
                             .unwrap_or("")
                             .trim_start_matches('/');
+                        println!("Token = {} ", token);
                         if token.is_empty() {
                             let mut response_body = String::new();
                             let currentuser_v = currentuser.lock().unwrap();
                             let currentuser_v = currentuser_v.trim().trim_matches('"');
-                            response_body.push_str(&format!("{} : ", currentuser_v));
+                            response_body.push_str(&format!("{} :\n\n", currentuser_v));
 
                             if let Some(users) = json.as_array() {
                                 for user in users {
@@ -265,7 +266,7 @@ fn handle_client(
                                                 };
                                                 for (token, _) in metadata_map {
                                                     response_body.push_str(&format!(
-                                                        "tpaste.fii/{} ",
+                                                        "tpaste.fii/{}\n",
                                                         token
                                                     ));
                                                 }
@@ -371,6 +372,13 @@ fn handle_client(
                 } else if message.starts_with("COMMAND_OUTPUT:") && 1 == *connected.lock().unwrap()
                 {
                     let command = message.trim_start_matches("COMMAND_OUTPUT:").trim();
+                    if message == "Command executed with no output." {
+                        let response = "No output to save";
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
+                        continue;
+                    }
                     if let Some(users) = json.as_array_mut() {
                         for user in users.iter_mut() {
                             if let Some(user_name) = user.get("username") {
