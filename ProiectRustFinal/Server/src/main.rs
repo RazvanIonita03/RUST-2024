@@ -10,6 +10,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
+use std::process::Command;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Person {
@@ -264,10 +265,25 @@ fn handle_client(
                                                         continue 'outer;
                                                     }
                                                 };
-                                                for (token, _) in metadata_map {
+                                                for (token, (_output,timestamp)) in metadata_map { 
+                                                    let datetime: DateTime<Utc> =
+                                                    match timestamp.parse() {
+                                                        Ok(dt) => dt,
+                                                        Err(e) => {
+                                                            eprintln!(
+                                                                "Failed to parse timestamp: {}",
+                                                                e
+                                                            );
+                                                            continue 'outer;
+                                                        }
+                                                    };
+                                                    let local_datetime = datetime.with_timezone(&Local);
+                                                    let formatted_timestamp = local_datetime
+                                                        .format("%Y-%m-%d %H:%M:%S")
+                                                        .to_string();
                                                     response_body.push_str(&format!(
-                                                        "tpaste.fii/{}\n",
-                                                        token
+                                                        "tpaste.fii/{}         Time of creation :{}\n",
+                                                        token, formatted_timestamp
                                                     ));
                                                 }
                                             }
@@ -311,27 +327,12 @@ fn handle_client(
                                                         continue 'outer;
                                                     }
                                                 };
-                                            if let Some((output, timestamp)) =
+                                            if let Some((output, _)) =
                                                 metadata_map.get(token)
                                             {
-                                                let datetime: DateTime<Utc> =
-                                                    match timestamp.parse() {
-                                                        Ok(dt) => dt,
-                                                        Err(e) => {
-                                                            eprintln!(
-                                                                "Failed to parse timestamp: {}",
-                                                                e
-                                                            );
-                                                            continue 'outer;
-                                                        }
-                                                    };
-                                                let local_datetime = datetime.with_timezone(&Local);
-                                                let formatted_timestamp = local_datetime
-                                                    .format("%Y-%m-%d %H:%M:%S")
-                                                    .to_string();
                                                 response_body = format!(
-                                                    "Timestamp: {}\nOutput: {}",
-                                                    formatted_timestamp, output
+                                                    "Output: {}",
+                                                    output
                                                 );
                                                 println!("Output: {}", output);
                                             } else {
@@ -369,82 +370,96 @@ fn handle_client(
                         }
                         return Ok(());
                     }
-                } else if message.starts_with("COMMAND_OUTPUT:") && 1 == *connected.lock().unwrap()
-                {
-                    let command = message.trim_start_matches("COMMAND_OUTPUT:").trim();
-                    if message == "Command executed with no output." {
-                        let response = "No output to save";
-                        if let Err(e) = stream.write_all(response.as_bytes()) {
-                            eprintln!("Failed to write to stream: {}", e);
-                        }
-                        continue;
-                    }
-                    if let Some(users) = json.as_array_mut() {
-                        for user in users.iter_mut() {
-                            if let Some(user_name) = user.get("username") {
-                                let user_name = user_name.as_str().unwrap_or("").trim();
-                                let currentuser_v = currentuser.lock().unwrap();
-                                let currentuser_v = currentuser_v.trim().trim_matches('"');
-                                if user_name == currentuser_v {
-                                    if let Some(metadata) = user.get_mut("metadata") {
-                                        let mut metadata_map: HashMap<String, (String, String)> =
-                                            match serde_json::from_value(metadata.take()) {
-                                                Ok(map) => map,
-                                                Err(e) => {
-                                                    eprintln!(
-                                                        "Failed to deserialize metadata: {}",
-                                                        e
-                                                    );
-                                                    continue 'outer;
+                } else if 1 == *connected.lock().unwrap() {
+                    let command = message.trim_end_matches(" | tpaste").trim();
+                    match run_piped_command(command){
+                        Ok(output) => {
+                            if output == "Command executed with no output." {
+                                let response = "Command executed with no output.";
+                                if let Err(e) = stream.write_all(response.as_bytes()) {
+                                    eprintln!("Failed to write to stream: {}", e);
+                                }
+                            } else if output.starts_with("Command error: ") {
+                                let response = format!("{}", output);
+                                if let Err(e) = stream.write_all(response.as_bytes()) {
+                                    eprintln!("Failed to write to stream: {}", e);
+                                }
+                            } else {
+                                if let Some(users) = json.as_array_mut() {
+                                    for user in users.iter_mut() {
+                                        if let Some(user_name) = user.get("username") {
+                                            let user_name = user_name.as_str().unwrap_or("").trim();
+                                            let currentuser_v = currentuser.lock().unwrap();
+                                            let currentuser_v = currentuser_v.trim().trim_matches('"');
+                                            if user_name == currentuser_v {
+                                                if let Some(metadata) = user.get_mut("metadata") {
+                                                    let mut metadata_map: HashMap<String, (String, String)> =
+                                                        match serde_json::from_value(metadata.take()) {
+                                                            Ok(map) => map,
+                                                            Err(e) => {
+                                                                eprintln!(
+                                                                    "Failed to deserialize metadata: {}",
+                                                                    e
+                                                                );
+                                                                continue 'outer;
+                                                            }
+                                                        };
+                                                    let random_token: String = thread_rng()
+                                                        .sample_iter(&Alphanumeric)
+                                                        .take(10)
+                                                        .map(char::from)
+                                                        .collect();
+                                                    let time_called = Utc::now().to_rfc3339();
+                                                    match metadata_map.insert(
+                                                        random_token.clone(),
+                                                        (output.to_string(), time_called.to_string()),
+                                                    ) {
+                                                        Some(_) => {
+                                                            eprintln!("Token already exists in metadata");
+                                                        }
+                                                        None => {
+                                                            *metadata = serde_json::to_value(metadata_map)?;
+                                                            let link =
+                                                                format!("http://tpaste.fii/{}", random_token);
+                                                            let response =
+                                                                format!("Output saved. Access it at: {}", link);
+                                                            println!("Response: {}", response);
+                                                            stream.write_all(response.as_bytes())?;
+                                                        }
+                                                    }
                                                 }
-                                            };
-                                        let random_token: String = thread_rng()
-                                            .sample_iter(&Alphanumeric)
-                                            .take(10)
-                                            .map(char::from)
-                                            .collect();
-                                        let time_called = Utc::now().to_rfc3339();
-                                        match metadata_map.insert(
-                                            random_token.clone(),
-                                            (command.to_string(), time_called.to_string()),
-                                        ) {
-                                            Some(_) => {
-                                                eprintln!("Token already exists in metadata");
-                                            }
-                                            None => {
-                                                *metadata = serde_json::to_value(metadata_map)?;
-                                                let link =
-                                                    format!("http://tpaste.fii/{}", random_token);
-                                                let response =
-                                                    format!("Output saved. Access it at: {}", link);
-                                                println!("Response: {}", response);
-                                                stream.write_all(response.as_bytes())?;
                                             }
                                         }
                                     }
+                                } else {
+                                    eprintln!("Users array not found in JSON");
                                 }
+                                let new_data = match serde_json::to_string(&json) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        eprintln!("Failed to serialize JSON: {}", e);
+                                        continue 'outer;
+                                    }
+                                };
+                                let mut file = match File::create("src/Info.json") {
+                                    Ok(file) => file,
+                                    Err(e) => {
+                                        eprintln!("Failed to create Info.json: {}", e);
+                                        continue 'outer;
+                                    }
+                                };
+                                if let Err(e) = file.write_all(new_data.as_bytes()) {
+                                    eprintln!("Failed to write to Info.json: {}", e);
+                                }
+
                             }
                         }
-                    } else {
-                        eprintln!("Users array not found in JSON");
-                    }
-                    let new_data = match serde_json::to_string(&json) {
-                        Ok(data) => data,
                         Err(e) => {
-                            eprintln!("Failed to serialize JSON: {}", e);
-                            continue 'outer;
+                            eprintln!("Failed to run command: {}", e);
                         }
-                    };
-                    let mut file = match File::create("src/Info.json") {
-                        Ok(file) => file,
-                        Err(e) => {
-                            eprintln!("Failed to create Info.json: {}", e);
-                            continue 'outer;
-                        }
-                    };
-                    if let Err(e) = file.write_all(new_data.as_bytes()) {
-                        eprintln!("Failed to write to Info.json: {}", e);
                     }
+                    
+                    
                 } else {
                     let response = "Invalid command";
                     if let Err(e) = stream.write_all(response.as_bytes()) {
@@ -488,5 +503,22 @@ fn remove_expired_accounts() -> Result<(), ErrorType> {
 
         std::thread::sleep(std::time::Duration::from_secs(10));
         //Verificare la fiecare 10 secunde
+    }
+}
+fn run_piped_command(command: &str) -> Result<std::string::String, std::io::Error> {
+    match Command::new("cmd").arg("/C").arg(command).output() {
+        Ok(output) => {
+            if !output.stdout.is_empty() {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            } else if !output.stderr.is_empty() {
+                Ok(format!(
+                    "Command error: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+            } else {
+                Ok("Command executed with no output.".to_string())
+            }
+        }
+        Err(e) => Err(e),
     }
 }
