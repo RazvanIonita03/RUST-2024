@@ -34,8 +34,7 @@ fn main() {
                             }
                         } else if buffer.ends_with(" | tpaste") {
                             
-                            let formatted_message = format!("{}", buffer);
-                            if let Err(e) = stream.write(formatted_message.as_bytes()) {
+                            if let Err(e) = stream.write(buffer.as_bytes()) {
                                         eprintln!("Failed to write the buffer : {}", e);
                                     };
                             match stream.read(&mut response) {

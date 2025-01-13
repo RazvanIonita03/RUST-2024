@@ -380,8 +380,7 @@ fn handle_client(
                                     eprintln!("Failed to write to stream: {}", e);
                                 }
                             } else if output.starts_with("Command error: ") {
-                                let response = format!("{}", output);
-                                if let Err(e) = stream.write_all(response.as_bytes()) {
+                                if let Err(e) = stream.write_all(output.as_bytes()) {
                                     eprintln!("Failed to write to stream: {}", e);
                                 }
                             } else {
