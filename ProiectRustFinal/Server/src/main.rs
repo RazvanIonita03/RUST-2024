@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use core::fmt;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -15,6 +15,7 @@ use std::process::Command;
 #[derive(Serialize, Deserialize, Debug)]
 struct Person {
     username: String,
+    password: String,
     token: String,
     created_at: String,
     metadata: HashMap<String, (String, String)>,
@@ -57,12 +58,6 @@ fn main() -> Result<(), ErrorType> {
 
     let pool = ThreadPool::new(4);
 
-    let _ = std::thread::spawn(|| {
-        if let Err(e) = remove_expired_accounts() {
-            eprintln!("Failed to remove expired accounts: {}", e);
-        }
-    });
-
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -96,10 +91,69 @@ fn handle_client(
         match stream.read(&mut buffer) {
             Ok(bytes_read) if bytes_read > 0 => {
                 let message = String::from_utf8_lossy(&buffer[..bytes_read]);
-                if *connected.lock().unwrap() == 0 && message.starts_with("Register :") {
-                    let username = message.trim_start_matches("Register :").trim();
-                    println!("Username: {}", username);
+                if message.starts_with("The machine is already connected") {
+                    let message_parts: Vec<&str> = message.split(" | ").collect();
+                    if message_parts.len() == 3 {
+                        let username = message_parts[1].trim();
+                        let user_token = message_parts[2].trim();
+                        if let Some(users) = json.as_array() {
+                            for user in users {
+                                if let Some(user_name) = user.get("username") {
+                                    if user_name == username {
+                                        if let Some(token) = user.get("token") {
+                                            let token_str = token.as_str().unwrap_or("").trim();
+                                            let user_token_trimmed = user_token.trim().trim_matches('"');
+                                            if token_str == user_token_trimmed {
+                                                match currentuser.lock() {
+                                                    Ok(mut currentuser_v) => {
+                                                        *currentuser_v = username.to_string();
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("Failed to lock connected: {}", e);
+                                                    }
+                                                }
+                                                match connected.lock() {
+                                                    Ok(mut connected_v) => {
+                                                        *connected_v = 1;
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("Failed to lock connected: {}", e);
+                                                    }
+                                                }
+                                                stream.write_all("You are already connected. Please input your commands".as_bytes())?;
+                                            }
+                                        } else {
+                                            stream.write_all("Token is not valid".as_bytes())?;
+                                            continue 'outer;
+                                        }
+                                    }
+                                } 
+                                else {
+                                    eprintln!("Username not found in JSON");
+                                    continue 'outer;
+                                }
+                            }
+                        } else {
+                            eprintln!("Users array not found in JSON");
+                            continue 'outer;
+                        }
+                    }
+                }
+                else if *connected.lock().unwrap() == 0 && message.starts_with("Register :") {
                     let mut register_success = true;
+                    let parts: Vec<&str> = message
+                        .trim_start_matches("Register :")
+                        .split_whitespace()
+                        .collect();
+                    if parts.len() != 2 {
+                        let response = "Login failed: Invalid format";
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                        }
+                        continue;
+                    }
+                    let username = parts[0].trim();
+                    let password = parts[1].trim();
                     if let Some(users) = json.as_array() {
                         for user in users {
                             if let Some(user_name) = user.get("username") {
@@ -116,20 +170,33 @@ fn handle_client(
                         eprintln!("Users array not found in JSON");
                     }
                     if register_success {
+                        currentuser.lock().unwrap().clear();
+                        match currentuser.lock() {
+                            Ok(mut currentuser_v) => {
+                                *currentuser_v = username.to_string();
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to lock connected: {}", e);
+                            }
+                        }
+                        match connected.lock() {
+                            Ok(mut connected_v) => {
+                                *connected_v = 1;
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to lock connected: {}", e);
+                            }
+                        }
                         let token: String = thread_rng()
                             .sample_iter(&Alphanumeric)
                             .take(10)
                             .map(char::from)
                             .collect();
                         let created_at = Utc::now().to_rfc3339();
-                        let response = format!("Register successful. Your token is: {}", token);
-                        if let Err(e) = stream.write_all(response.as_bytes()) {
-                            eprintln!("Failed to write to stream: {}", e);
-                            continue 'outer;
-                        }
                         let new_person = json!({
                             "username": username.to_string(),
                             "token": token.clone(),
+                            "password": password.to_string(),
                             "created_at": created_at,
                             "metadata": HashMap::<String,(String,String)>::new(),
                         });
@@ -156,8 +223,13 @@ fn handle_client(
                             eprintln!("Failed to write to Info.json: {}", e);
                             continue 'outer;
                         }
+                        let response = format!("You have registered succesfully. Your username is: {} and your token is: {}", username,token);
+                        if let Err(e) = stream.write_all(response.as_bytes()) {
+                            eprintln!("Failed to write to stream: {}", e);
+                            continue 'outer;
+                        }
                     } else {
-                        let response = "Register failed: Username already exists";
+                        let response = "Registration has failed: The username already exists in the database";
                         if let Err(e) = stream.write_all(response.as_bytes()) {
                             eprintln!("Failed to write to stream: {}", e);
                         }
@@ -175,16 +247,16 @@ fn handle_client(
                         continue;
                     }
                     let username = parts[0].trim();
-                    let token = parts[1].trim();
+                    let password = parts[1].trim();
                     let mut login_success = false;
-                    let mut token_valid = false;
+                    let mut password_valid = false;
                     if let Some(users) = json.as_array() {
                         for user in users {
                             if let Some(user_name) = user.get("username") {
                                 if user_name == username {
                                     login_success = true;
-                                    if let Some(user_token) = user.get("token") {
-                                        if user_token == token {
+                                    if let Some(user_password) = user.get("password") {
+                                        if user_password == password {
                                             currentuser.lock().unwrap().clear();
                                             match currentuser.lock() {
                                                 Ok(mut currentuser_v) => {
@@ -194,7 +266,7 @@ fn handle_client(
                                                     eprintln!("Failed to lock connected: {}", e);
                                                 }
                                             }
-                                            token_valid = true;
+                                            password_valid = true;
                                         }
                                     }
                                     break;
@@ -204,14 +276,47 @@ fn handle_client(
                     } else {
                         eprintln!("Users array not found in JSON");
                     }
-                    if login_success && token_valid {
-                        println!("Login successful!");
+                    if login_success && password_valid {
                         match connected.lock() {
                             Ok(mut connected_v) => {
                                 *connected_v = 1;
-                                let response = "Login successful";
+                                let new_token: String = thread_rng()
+                                    .sample_iter(&Alphanumeric)
+                                    .take(10)
+                                    .map(char::from)
+                                    .collect();
+                                if let Some(users) = json.as_array_mut() {
+                                    for user in users.iter_mut() {
+                                        if let Some(user_name) = user.get("username") {
+                                            if user_name == username {
+                                                if let Some(token) = user.get_mut("token") {
+                                                    *token = Value::String(new_token.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let new_data = match serde_json::to_string(&json) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        eprintln!("Failed to serialize JSON: {}", e);
+                                        return Err(ErrorType::JsonError(e));
+                                    }
+                                };
+                                let mut file = match File::create("src/Info.json") {
+                                    Ok(file) => file,
+                                    Err(e) => {
+                                        eprintln!("Failed to create Info.json: {}", e);
+                                        return Err(ErrorType::IoError(e));
+                                    }
+                                };
+                                if let Err(e) = file.write_all(new_data.as_bytes()) {
+                                    eprintln!("Failed to write to Info.json: {}", e);
+                                    return Err(ErrorType::IoError(e));
+                                }
+                                let response = format!("You have logged in succesfully : Your username is: {} and your token is: {}", username, new_token);
                                 stream.write_all(response.as_bytes())?;
-                                println!("Sent login message: {}", response);
+                                continue 'outer;
                             }
                             Err(e) => {
                                 eprintln!("Failed to lock connected: {}", e);
@@ -331,10 +436,9 @@ fn handle_client(
                                                 metadata_map.get(token)
                                             {
                                                 response_body = format!(
-                                                    "Output: {}",
+                                                    "Command output: {}",
                                                     output
                                                 );
-                                                println!("Output: {}", output);
                                             } else {
                                                 eprintln!(
                                                     "Token not found in metadata for user: {}",
@@ -371,94 +475,105 @@ fn handle_client(
                         return Ok(());
                     }
                 } else if 1 == *connected.lock().unwrap() {
-                    let command = message.trim_end_matches(" | tpaste").trim();
-                    match run_piped_command(command){
-                        Ok(output) => {
-                            if output == "Command executed with no output." {
-                                let response = "Command executed with no output.";
-                                if let Err(e) = stream.write_all(response.as_bytes()) {
-                                    eprintln!("Failed to write to stream: {}", e);
-                                }
-                            } else if output.starts_with("Command error: ") {
-                                if let Err(e) = stream.write_all(output.as_bytes()) {
-                                    eprintln!("Failed to write to stream: {}", e);
-                                }
-                            } else {
+                    let message_parts: Vec<&str> = message.split(" | ").collect();
+                    if message_parts.len() == 3 {
+                        let command = message_parts[0].trim();
+                        let user_token = message_parts[2].trim();
+                        match currentuser.lock() {
+                            Ok(currentuser_v) => {
+                                println!("Current user: {}", currentuser_v);
                                 if let Some(users) = json.as_array_mut() {
                                     for user in users.iter_mut() {
                                         if let Some(user_name) = user.get("username") {
-                                            let user_name = user_name.as_str().unwrap_or("").trim();
-                                            let currentuser_v = currentuser.lock().unwrap();
-                                            let currentuser_v = currentuser_v.trim().trim_matches('"');
-                                            if user_name == currentuser_v {
-                                                if let Some(metadata) = user.get_mut("metadata") {
-                                                    let mut metadata_map: HashMap<String, (String, String)> =
-                                                        match serde_json::from_value(metadata.take()) {
-                                                            Ok(map) => map,
-                                                            Err(e) => {
-                                                                eprintln!(
-                                                                    "Failed to deserialize metadata: {}",
-                                                                    e
-                                                                );
-                                                                continue 'outer;
+                                            let user_name = user_name.as_str().unwrap_or("").trim().trim_matches('"');
+                                            if user_name == currentuser_v.trim().trim_matches('"') {
+                                                if let Some(token) = user.get("token") {
+                                                    let token_str = token.as_str().unwrap_or("").trim();
+                                                    let user_token_trimmed = user_token.trim().trim_matches('"');
+                                                    if token_str == user_token_trimmed {
+                                                        match run_piped_command(command){
+                                                            Ok(output) => {
+                                                                if output == "Command executed with no output." {
+                                                                    let response = "Command executed with no output.";
+                                                                    if let Err(e) = stream.write_all(response.as_bytes()) {
+                                                                        eprintln!("Failed to write to stream: {}", e);
+                                                                    }
+                                                                } else if output.starts_with("Command error: ") {
+                                                                    if let Err(e) = stream.write_all(output.as_bytes()) {
+                                                                        eprintln!("Failed to write to stream: {}", e);
+                                                                    }
+                                                                } else if let Some(metadata) = user.get_mut("metadata") {
+                                                                    let mut metadata_map: HashMap<String, (String, String)> =
+                                                                        match serde_json::from_value(metadata.take()) {
+                                                                            Ok(map) => map,
+                                                                            Err(e) => {
+                                                                                eprintln!(
+                                                                                    "Failed to deserialize metadata: {}",
+                                                                                    e
+                                                                                );
+                                                                                continue 'outer;
+                                                                            }
+                                                                        };
+                                                                    let random_token: String = thread_rng()
+                                                                        .sample_iter(&Alphanumeric)
+                                                                        .take(10)
+                                                                        .map(char::from)
+                                                                        .collect();
+                                                                    let time_called = Utc::now().to_rfc3339();
+                                                                    match metadata_map.insert(
+                                                                        random_token.clone(),
+                                                                        (output.to_string(), time_called.to_string()),
+                                                                    ) {
+                                                                        Some(_) => {
+                                                                            eprintln!("Token already exists in metadata");
+                                                                        }
+                                                                        None => {
+                                                                            *metadata = serde_json::to_value(metadata_map)?;
+                                                                            let link =
+                                                                                format!("http://tpaste.fii/{}", random_token);
+                                                                            let response =
+                                                                                format!("Output saved. Access it at: {}", link);
+                                                                            println!("Response: {}", response);
+                                                                            stream.write_all(response.as_bytes())?;
+                                                                        }
+                                                                    }
+                                                                
+                                                                }
                                                             }
-                                                        };
-                                                    let random_token: String = thread_rng()
-                                                        .sample_iter(&Alphanumeric)
-                                                        .take(10)
-                                                        .map(char::from)
-                                                        .collect();
-                                                    let time_called = Utc::now().to_rfc3339();
-                                                    match metadata_map.insert(
-                                                        random_token.clone(),
-                                                        (output.to_string(), time_called.to_string()),
-                                                    ) {
-                                                        Some(_) => {
-                                                            eprintln!("Token already exists in metadata");
-                                                        }
-                                                        None => {
-                                                            *metadata = serde_json::to_value(metadata_map)?;
-                                                            let link =
-                                                                format!("http://tpaste.fii/{}", random_token);
-                                                            let response =
-                                                                format!("Output saved. Access it at: {}", link);
-                                                            println!("Response: {}", response);
-                                                            stream.write_all(response.as_bytes())?;
+                                                            Err(e) => {
+                                                                eprintln!("Failed to run command: {}", e);
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                } else {
-                                    eprintln!("Users array not found in JSON");
                                 }
-                                let new_data = match serde_json::to_string(&json) {
-                                    Ok(data) => data,
-                                    Err(e) => {
-                                        eprintln!("Failed to serialize JSON: {}", e);
-                                        continue 'outer;
-                                    }
-                                };
-                                let mut file = match File::create("src/Info.json") {
-                                    Ok(file) => file,
-                                    Err(e) => {
-                                        eprintln!("Failed to create Info.json: {}", e);
-                                        continue 'outer;
-                                    }
-                                };
-                                if let Err(e) = file.write_all(new_data.as_bytes()) {
-                                    eprintln!("Failed to write to Info.json: {}", e);
-                                }
-
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to lock currentuser: {}", e);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Failed to run command: {}", e);
-                        }
+                        
                     }
-                    
-                    
+                    let new_data = match serde_json::to_string(&json) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            eprintln!("Failed to serialize JSON: {}", e);
+                            continue 'outer;
+                        }
+                    };
+                    let mut file = match File::create("src/Info.json") {
+                        Ok(file) => file,
+                        Err(e) => {
+                            eprintln!("Failed to create Info.json: {}", e);
+                            continue 'outer;
+                        }
+                    };
+                    if let Err(e) = file.write_all(new_data.as_bytes()) {
+                        eprintln!("Failed to write to Info.json: {}", e);
+                    }
                 } else {
                     let response = "Invalid command";
                     if let Err(e) = stream.write_all(response.as_bytes()) {
@@ -471,37 +586,6 @@ fn handle_client(
             }
             Err(e) => eprintln!("Failed to read message: {}", e),
         }
-    }
-}
-
-fn remove_expired_accounts() -> Result<(), ErrorType> {
-    loop {
-        let mut file = File::open("src/Info.json")?;
-        let mut data = String::new();
-        file.read_to_string(&mut data)?;
-        let mut json: Value = serde_json::from_str(&data).expect("Unable to parse Info.json");
-
-        let now = Utc::now();
-        if let Some(users) = json.as_array_mut() {
-            users.retain(|user| {
-                if let Some(created_at) = user.get("created_at") {
-                    if let Some(created_at_str) = created_at.as_str() {
-                        if let Ok(created_at_date) = DateTime::parse_from_rfc3339(created_at_str) {
-                            return now.signed_duration_since(created_at_date.with_timezone(&Utc))
-                                < Duration::days(60);
-                        }
-                    }
-                }
-                false
-            });
-        }
-
-        let new_data = serde_json::to_string(&json)?;
-        let mut file = File::create("src/Info.json")?;
-        file.write_all(new_data.as_bytes())?;
-
-        std::thread::sleep(std::time::Duration::from_secs(10));
-        //Verificare la fiecare 10 secunde
     }
 }
 fn run_piped_command(command: &str) -> Result<std::string::String, std::io::Error> {
