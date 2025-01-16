@@ -146,7 +146,7 @@ fn handle_client(
                         .split_whitespace()
                         .collect();
                     if parts.len() != 2 {
-                        let response = "Login failed: Invalid format";
+                        let response = "Register failed. Invalid format";
                         if let Err(e) = stream.write_all(response.as_bytes()) {
                             eprintln!("Failed to write to stream: {}", e);
                         }
@@ -229,7 +229,7 @@ fn handle_client(
                             continue 'outer;
                         }
                     } else {
-                        let response = "Registration has failed: The username already exists in the database";
+                        let response = "Registration has failed. The username already exists in the database";
                         if let Err(e) = stream.write_all(response.as_bytes()) {
                             eprintln!("Failed to write to stream: {}", e);
                         }
@@ -314,7 +314,7 @@ fn handle_client(
                                     eprintln!("Failed to write to Info.json: {}", e);
                                     return Err(ErrorType::IoError(e));
                                 }
-                                let response = format!("You have logged in succesfully : Your username is: {} and your token is: {}", username, new_token);
+                                let response = format!("You have logged in succesfully. Your username is: {} and your token is: {}", username, new_token);
                                 stream.write_all(response.as_bytes())?;
                                 continue 'outer;
                             }

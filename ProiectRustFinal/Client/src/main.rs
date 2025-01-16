@@ -25,8 +25,8 @@ fn main() -> Result<(), ErrorType> {
     let mut connected = 0;
 
     let _ = std::thread::spawn(|| {
-        if let Err(e) = remove_expired_accounts() {
-            eprintln!("There is no account saved on this machine : {}", e);
+        if let Err(_e) = remove_expired_accounts() {
+            println!("There is no account saved on this machine");
         }
     });
 
@@ -38,14 +38,14 @@ fn main() -> Result<(), ErrorType> {
             let mut data = String::new();
             file.read_to_string(&mut data)?;
             if data.trim().is_empty() {
-                println!("The JSON file is empty. Proceeding with normal registration and login.");
+                println!("Please register or login first.");
             } else {
                 let json: Value = serde_json::from_str(&data)?;
                 if json.as_object().map_or(false, |obj| !obj.is_empty()) {
                     jsonstate = 1;
                 }
                 else {
-                    println!("The JSON file is empty. Proceeding with normal registration and login.");
+                    println!("Please register or login first.");
                 }
             }
             if jsonstate == 1 {
@@ -88,12 +88,11 @@ fn main() -> Result<(), ErrorType> {
                                     let response = String::from_utf8_lossy(&response[..bytes_read]);
                                     println!("{}", response);
                                     if let Some((user, token)) = response
-                                        .split_once("You have logged in succesfully : Your username is: ")
+                                        .split_once("You have logged in succesfully. Your username is: ")
                                         .and_then(|(_, rest)| rest.split_once(" and your token is: "))
                                     {
                                         connected = 1;
                                         let created_at = Utc::now().to_rfc3339();
-                                        // Create a new JSON object with the user and token
                                         let new_entry = json!({
                                             "username": user,
                                             "created_at": created_at,
@@ -124,7 +123,6 @@ fn main() -> Result<(), ErrorType> {
                                     {
                                         connected = 1;
                                         let created_at = Utc::now().to_rfc3339();
-                                        // Create a new JSON object with the user and token
                                         let new_entry = json!({
                                             "username": user,
                                             "created_at": created_at,
